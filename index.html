@@ -74,6 +74,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 .newlist button{all:unset;box-sizing:border-box;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;width:100%;padding:11px 4px;cursor:pointer;color:var(--ink)}
 .newlist .nt{font-weight:600;overflow-wrap:anywhere}
 .newlist .na{color:var(--mute);font-size:13px}
+.newlist .nb{margin-left:auto;background:var(--acc);color:var(--accink);font-weight:700;font-size:12px;padding:2px 10px;border-radius:99px;white-space:nowrap}
 .newlist button:hover .nt{color:var(--acc)}
 .newlist button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .newnote{color:var(--mute);font-size:13px;margin:14px 0 0}
@@ -184,7 +185,7 @@ dialog{max-height:90vh;max-height:90dvh}
     rows=rows.filter(function(r){return r.some(function(x){return x.trim()})});
     if(rows.length&&/^artist/i.test(rows[0][0].trim()))rows.shift();
     return rows.map(function(p){p=p.map(function(x){return x.trim()});
-      return {artist:p[0]||'',title:p[1]||'',year:p[2]||'',box:p[3]||'',genre:p[4]||'',comment:p[5]||'',added:p[6]||''}})
+      return {artist:p[0]||'',title:p[1]||'',year:p[2]||'',box:p[3]||'',genre:p[4]||'',comment:p[5]||'',cover:p[6]||'',added:p[7]||''}})
       .filter(function(r){return r.artist||r.title});
   }
   function coverFile(r){
@@ -225,9 +226,12 @@ dialog{max-height:90vh;max-height:90dvh}
     return p.then(function(v){if(v)probed[url]=true;return v});   // only remember covers that exist, so newly added ones are found
   }
   function findCovers(){
-    var seen={},list=[];
-    records.forEach(function(r){var u=coverFile(r);if(!seen[u]){seen[u]=1;list.push(r)}});
-    var ok=[],i=0;
+    var seen={},list=[],ok=[];
+    records.forEach(function(r){
+      var k=coverKey(r);if(seen[k])return;seen[k]=1;
+      if(sheetCover(r)||autoCache[k])ok.push(r);else list.push(r);
+    });
+    var i=0;
     function worker(){
       if(i>=list.length)return Promise.resolve();
       var r=list[i++];
@@ -240,11 +244,60 @@ dialog{max-height:90vh;max-height:90dvh}
     });
   }
   function shuffle(a){a=a.slice();for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var x=a[i];a[i]=a[j];a[j]=x}return a}
+  /* ---- Covers: link in the sheet (column G) > file in the covers folder > automatic search ---- */
+  var LOOKUP_GAP=window.LOOKUP_GAP_OVERRIDE||3000;
+  var autoCache={},lookupQ=[],lookupBusy=false,lookupMiss={};
+  try{autoCache=JSON.parse(localStorage.getItem('autoCovers')||'{}')}catch(e){}
+  function coverKey(r){return norm(r.artist+' '+r.title)}
+  function sheetCover(r){var u=String(r.cover||'').trim();return /^https?:\/\//i.test(u)?u:''}
+  function lookupCover(r,prio){
+    var k=coverKey(r);
+    if(autoCache[k])return Promise.resolve(autoCache[k]);
+    if(lookupMiss[k])return Promise.resolve('');
+    return new Promise(function(res){
+      var job={r:r,k:k,res:res};
+      if(prio)lookupQ.unshift(job);else lookupQ.push(job);
+      pump();
+    });
+  }
+  function pump(){
+    if(lookupBusy||!lookupQ.length)return;
+    var j=lookupQ.shift();
+    if(autoCache[j.k]){j.res(autoCache[j.k]);return pump()}
+    if(lookupMiss[j.k]){j.res('');return pump()}
+    lookupBusy=true;
+    itunesBest(j.r).then(function(b){
+      var u=b&&b.artworkUrl100?b.artworkUrl100.replace('100x100bb','600x600bb'):'';
+      if(u){autoCache[j.k]=u;try{localStorage.setItem('autoCovers',JSON.stringify(autoCache))}catch(e){}}
+      else lookupMiss[j.k]=1;
+      return u;
+    }).catch(function(){return ''}).then(function(u){
+      j.res(u);
+      setTimeout(function(){lookupBusy=false;pump()},LOOKUP_GAP);
+    });
+  }
+  function setCover(im,r,onNone,prio){
+    var urls=[],s=sheetCover(r);
+    if(s)urls.push(s);
+    urls.push(coverFile(r));
+    var i=0,triedAuto=false;
+    function fail(){im.onerror=null;if(onNone)onNone()}
+    function step(){
+      if(i<urls.length){im.src=urls[i++];return}
+      if(triedAuto){fail();return}
+      triedAuto=true;
+      var k=coverKey(r);
+      if(autoCache[k]){im.src=autoCache[k];return}
+      lookupCover(r,prio).then(function(u){if(u)im.src=u;else fail()});
+    }
+    im.onerror=step;
+    step();
+  }
   function tile(r){
     var t=document.createElement('div');t.className='tile';t.tabIndex=0;t.setAttribute('role','button');
     t.title=r.title+' \u2014 '+r.artist;t.setAttribute('aria-label',r.title+' by '+r.artist);
-    var im=document.createElement('img');im.alt='';im.decoding='async';im.loading='lazy';im.src=coverFile(r);
-    im.onerror=function(){im.remove();t.classList.add('noimg')};
+    var im=document.createElement('img');im.alt='';im.decoding='async';im.loading='lazy';
+    setCover(im,r,function(){im.remove();t.classList.add('noimg')});
     t.appendChild(im);
     var tx=document.createElement('div');tx.className='tx';
     var tt=document.createElement('div');tt.className='tt';tt.textContent=r.title;
@@ -254,15 +307,36 @@ dialog{max-height:90vh;max-height:90dvh}
     t.onkeydown=function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();openAlbum(r)}};
     return t;
   }
-  /* ---- "New": the last 3 rows of the spreadsheet, newest (bottom row) first ---- */
+  /* ---- "New additions": the 3 newest by the "Date added" column (H); without dates, the last 3 rows ---- */
+  function parseAdded(s){
+    s=String(s||'').trim();if(!s)return 0;
+    var m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m)return Date.UTC(+m[1],+m[2]-1,+m[3]);
+    m=s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})(?:[ T].*)?$/);   // day/month/year
+    if(m){var y=+m[3];if(y<100)y+=2000;return Date.UTC(y,+m[2]-1,+m[1])}
+    var d=Date.parse(s);return isNaN(d)?0:d;
+  }
+  function fmtDate(ts){
+    var d=new Date(ts),mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return d.getUTCDate()+' '+mo[d.getUTCMonth()]+' '+d.getUTCFullYear();
+  }
   function buildNew(){
     var row=$('newRow');row.innerHTML='';
-    var items=records.slice(-3).reverse();
-    items.forEach(function(r){
-      var li=document.createElement('li'),bt=document.createElement('button');bt.type='button';
+    var dated=records.map(function(r,i){return {r:r,t:parseAdded(r.added),i:i}}).filter(function(x){return x.t>0});
+    var items;
+    if(dated.length){
+      items=dated.sort(function(a,b){return b.t-a.t||b.i-a.i}).slice(0,3);
+    }else{
+      items=records.slice(-3).reverse().map(function(r){return {r:r,t:0}});
+    }
+    items.forEach(function(x){
+      var r=x.r,li=document.createElement('li'),bt=document.createElement('button');bt.type='button';
       var nt=document.createElement('span');nt.className='nt';nt.textContent=r.title;
-      var na=document.createElement('span');na.className='na';na.textContent=r.artist;
-      bt.appendChild(nt);bt.appendChild(na);bt.onclick=function(){openAlbum(r)};
+      var na=document.createElement('span');na.className='na';
+      na.textContent=r.artist+(x.t?' \u00B7 '+fmtDate(x.t):'');
+      bt.appendChild(nt);bt.appendChild(na);
+      if(r.box){var bx=document.createElement('span');bx.className='nb';bx.textContent='Box '+r.box;bt.appendChild(bx)}
+      bt.onclick=function(){openAlbum(r)};
       li.appendChild(bt);row.appendChild(li);
     });
     $('newSec').hidden=!items.length;
@@ -284,6 +358,10 @@ dialog{max-height:90vh;max-height:90dvh}
       for(var pass=0;pass<2;pass++)half.forEach(function(r){track.appendChild(tile(r))});
       var w=track.firstChild?track.firstChild.offsetWidth+18:218;
       track.style.animationDuration=Math.max(30,half.length*w/60)+'s';   // about 60 px per second
+      records.slice(-15).forEach(function(r){
+        if(sheetCover(r)||autoCache[coverKey(r)])return;
+        probe(coverFile(r)).then(function(g){if(!g)lookupCover(r)});
+      });
     });
   }
   var lastPick=-1;
@@ -321,7 +399,7 @@ dialog{max-height:90vh;max-height:90dvh}
       document.head.appendChild(s);
     });
   }
-  function fromItunes(r){
+  function itunesBest(r){
     var want=r.artist+' '+r.title;
     return jsonp('https://itunes.apple.com/search?entity=album&limit=8&term='+encodeURIComponent(want)).then(function(d){
       var best=null,bs=0;
@@ -330,7 +408,12 @@ dialog{max-height:90vh;max-height:90dvh}
         if(norm(c.collectionName).indexOf(norm(r.title))>=0&&score(r.artist,c.artistName)>0)s+=0.3;
         if(s>bs){bs=s;best=c}
       });
-      if(!best||bs<0.5)return null;
+      return (best&&bs>=0.5)?best:null;
+    });
+  }
+  function fromItunes(r){
+    return itunesBest(r).then(function(best){
+      if(!best)return null;
       return jsonp('https://itunes.apple.com/lookup?entity=song&limit=200&id='+best.collectionId).then(function(d2){
         var tr=(d2.results||[]).filter(function(x){return x.wrapperType==='track'})
           .sort(function(a,b){return (a.discNumber||1)-(b.discNumber||1)||(a.trackNumber||0)-(b.trackNumber||0)})
@@ -374,7 +457,7 @@ dialog{max-height:90vh;max-height:90dvh}
     openFor=r;var body=$('dlgBody');body.innerHTML='';
     var top=document.createElement('div');top.className='top';
     var big=document.createElement('div');big.className='big';big.textContent='\u25CE';
-    var im=document.createElement('img');im.alt='';im.src=coverFile(r);im.onerror=function(){im.remove()};big.appendChild(im);
+    var im=document.createElement('img');im.alt='';setCover(im,r,function(){im.remove()},true);big.appendChild(im);
     var info=document.createElement('div');
     var h=document.createElement('h3');h.textContent=r.title;
     var a=document.createElement('div');a.className='a';a.textContent=[r.artist,r.year].filter(Boolean).join(' \u00B7 ');
@@ -437,8 +520,7 @@ dialog{max-height:90vh;max-height:90dvh}
       if(sort==='box'&&r.box!==lastBox){lastBox=r.box;var h=document.createElement('h2');h.textContent='Box '+r.box;g.appendChild(h)}
       var c=document.createElement('div');c.className='card';
       var cv=document.createElement('div');cv.className='cover';cv.textContent='\u25CE';
-      var im=document.createElement('img');im.loading='lazy';im.alt='Cover of '+r.title;im.src=coverFile(r);
-      im.onerror=function(){im.remove()};
+      var im=document.createElement('img');im.loading='lazy';im.alt='Cover of '+r.title;setCover(im,r,function(){im.remove()});
       cv.appendChild(im);
       c.appendChild(cv);
       var m=document.createElement('div');m.className='meta';
@@ -464,7 +546,7 @@ dialog{max-height:90vh;max-height:90dvh}
   function gvizRows(d){
     return (d.table.rows||[]).map(function(row){
       var c=row.c||[],out=[];
-      for(var i=0;i<7;i++){
+      for(var i=0;i<8;i++){
         var v=c[i]&&c[i].v!=null?c[i].v:'';
         if(typeof v==='string'&&/^Date\(/.test(v)){var m=v.match(/Date\((\d+),(\d+),(\d+)/);v=m?m[1]+'-'+(+m[2]+1)+'-'+m[3]:''}
         out.push(String(v));
