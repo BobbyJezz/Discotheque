@@ -185,7 +185,7 @@ dialog{max-height:90vh;max-height:90dvh}
     rows=rows.filter(function(r){return r.some(function(x){return x.trim()})});
     if(rows.length&&/^artist/i.test(rows[0][0].trim()))rows.shift();
     return rows.map(function(p){p=p.map(function(x){return x.trim()});
-      return {artist:p[0]||'',title:p[1]||'',year:p[2]||'',box:p[3]||'',genre:p[4]||'',comment:p[5]||'',cover:p[6]||'',added:p[7]||''}})
+      return {artist:p[0]||'',title:p[1]||'',year:p[2]||'',box:p[3]||'',genre:p[4]||'',comment:p[5]||'',isnew:/^yes$/i.test(p[6]||''),cover:p[7]||''}})
       .filter(function(r){return r.artist||r.title});
   }
   function coverFile(r){
@@ -307,33 +307,14 @@ dialog{max-height:90vh;max-height:90dvh}
     t.onkeydown=function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();openAlbum(r)}};
     return t;
   }
-  /* ---- "New additions": the 3 newest by the "Date added" column (H); without dates, the last 3 rows ---- */
-  function parseAdded(s){
-    s=String(s||'').trim();if(!s)return 0;
-    var m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-    if(m)return Date.UTC(+m[1],+m[2]-1,+m[3]);
-    m=s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})(?:[ T].*)?$/);   // day/month/year
-    if(m){var y=+m[3];if(y<100)y+=2000;return Date.UTC(y,+m[2]-1,+m[1])}
-    var d=Date.parse(s);return isNaN(d)?0:d;
-  }
-  function fmtDate(ts){
-    var d=new Date(ts),mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return d.getUTCDate()+' '+mo[d.getUTCMonth()]+' '+d.getUTCFullYear();
-  }
+  /* ---- "New additions": every album with "Yes" in column G of the spreadsheet ---- */
   function buildNew(){
     var row=$('newRow');row.innerHTML='';
-    var dated=records.map(function(r,i){return {r:r,t:parseAdded(r.added),i:i}}).filter(function(x){return x.t>0});
-    var items;
-    if(dated.length){
-      items=dated.sort(function(a,b){return b.t-a.t||b.i-a.i}).slice(0,3);
-    }else{
-      items=records.slice(-3).reverse().map(function(r){return {r:r,t:0}});
-    }
-    items.forEach(function(x){
-      var r=x.r,li=document.createElement('li'),bt=document.createElement('button');bt.type='button';
+    var items=records.filter(function(r){return r.isnew});
+    items.forEach(function(r){
+      var li=document.createElement('li'),bt=document.createElement('button');bt.type='button';
       var nt=document.createElement('span');nt.className='nt';nt.textContent=r.title;
-      var na=document.createElement('span');na.className='na';
-      na.textContent=r.artist+(x.t?' \u00B7 '+fmtDate(x.t):'');
+      var na=document.createElement('span');na.className='na';na.textContent=r.artist;
       bt.appendChild(nt);bt.appendChild(na);
       if(r.box){var bx=document.createElement('span');bx.className='nb';bx.textContent='Box '+r.box;bt.appendChild(bx)}
       bt.onclick=function(){openAlbum(r)};
